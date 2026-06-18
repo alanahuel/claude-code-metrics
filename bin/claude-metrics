@@ -36,7 +36,8 @@ Subcomandos:
   total             Gasto y tokens acumulados de todo el histórico.
   dashboard         Genera el dashboard HTML con gráficas y lo abre en el navegador.
                     (`--no-open` solo lo regenera sin abrirlo).
-  report [salida.pdf] Imprime el dashboard a PDF con un navegador headless.
+  report [salida.pdf] [--days N | --all | --from D --to D] [--project P]
+                    Informe PDF del rango elegido (def. 30 días) vía navegador headless.
   csv    [salida.csv] Exporta el detalle horario a CSV (hoja de cálculo).
   config            Muestra/crea ~/.config/claude-metrics/config.json
                     (moneda, precios, workspace_roots).
@@ -1000,6 +1001,174 @@ def build_dashboard_html(con):
     return html
 
 
+def _report_window(con, days=None, dfrom=None, dto=None, all_time=False):
+    """Resuelve el rango del informe a ('YYYY-MM-DD', 'YYYY-MM-DD') local."""
+    now = datetime.now().astimezone()
+    end = dto or now.strftime("%Y-%m-%d")
+    if dfrom:
+        start = dfrom
+    elif all_time:
+        row = con.execute(
+            "SELECT MIN(substr(hour,1,10)) FROM usage_hourly").fetchone()
+        start = (row[0] if row and row[0]
+                 else (now - timedelta(days=29)).strftime("%Y-%m-%d"))
+    else:
+        n = days if days is not None else 30
+        start = (now - timedelta(days=max(0, n - 1))).strftime("%Y-%m-%d")
+    return start, end
+
+
+def build_report_html(con, start, end, project=None):
+    """Informe imprimible para un RANGO de fechas (y opcionalmente un proyecto).
+    Reusa las gráficas SVG del dashboard pero acotadas a la ventana elegida, así
+    el PDF no es siempre el mismo: refleja el periodo seleccionado en la web."""
+    now = datetime.now().astimezone()
+    sd = datetime.strptime(start, "%Y-%m-%d")
+    ed = datetime.strptime(end, "%Y-%m-%d")
+    if ed < sd:
+        sd, ed = ed, sd
+        start, end = end, start
+    span = (ed - sd).days + 1
+    hourly_mode = span <= 2
+
+    cond = "substr(hour,1,10) BETWEEN ? AND ?"
+    params = [start, end]
+    if project:
+        cond += " AND project = ?"
+        params.append(project)
+    params = tuple(params)
+
+    krow = con.execute(
+        f"SELECT SUM(cost_usd), SUM(messages), "
+        f"SUM(input+output+cache_write_5m+cache_write_1h+cache_read) "
+        f"FROM usage_hourly WHERE {cond}", params).fetchone()
+    cost = (krow[0] or 0.0) if krow else 0.0
+    msgs = int(krow[1] or 0) if krow else 0
+    toks = (krow[2] or 0) if krow else 0
+    avg_day = cost / max(1, span)
+
+    if hourly_mode:
+        raw = dict(con.execute(
+            f"SELECT hour, SUM(cost_usd) FROM usage_hourly WHERE {cond} "
+            f"GROUP BY hour", params))
+        ts, cur, endh = [], sd, ed.replace(hour=23)
+        while cur <= endh:
+            ts.append((cur.strftime("%d/%m %Hh"),
+                       raw.get(cur.strftime("%Y-%m-%dT%H"), 0.0)))
+            cur += timedelta(hours=1)
+        ts_title = "Gasto por hora"
+    else:
+        raw = dict(con.execute(
+            f"SELECT substr(hour,1,10), SUM(cost_usd) FROM usage_hourly "
+            f"WHERE {cond} GROUP BY substr(hour,1,10)", params))
+        ts, cur = [], sd
+        while cur <= ed:
+            d = cur.strftime("%Y-%m-%d")
+            ts.append((d[5:], raw.get(d, 0.0)))
+            cur += timedelta(days=1)
+        ts_title = "Gasto diario"
+
+    model_rows = con.execute(
+        f"SELECT model, SUM(cost_usd) FROM usage_hourly WHERE {cond} "
+        f"GROUP BY model ORDER BY SUM(cost_usd) DESC", params).fetchall()
+    model_data = [(m.replace("claude-", ""), c or 0.0, PALETTE[i % len(PALETTE)])
+                  for i, (m, c) in enumerate(model_rows)]
+
+    proj_data = []
+    if not project:
+        for i, (p, c) in enumerate(con.execute(
+                f"SELECT project, SUM(cost_usd) FROM usage_hourly WHERE {cond} "
+                f"GROUP BY project ORDER BY SUM(cost_usd) DESC LIMIT 12", params)):
+            proj_data.append((p[:26], c or 0.0, PALETTE[i % len(PALETTE)]))
+
+    su = sd.replace(tzinfo=now.tzinfo).astimezone(timezone.utc).isoformat()
+    eu = ((ed + timedelta(days=1)).replace(tzinfo=now.tzinfo)
+          .astimezone(timezone.utc).isoformat())
+    s5, s7 = [], []
+    for (uts, win, u) in con.execute(
+            "SELECT ts, window, utilization FROM util_snapshots "
+            "WHERE ts >= ? AND ts < ? ORDER BY ts", (su, eu)):
+        if win == "five_hour":
+            s5.append((uts, u or 0))
+        elif win == "seven_day":
+            s7.append((uts, u or 0))
+    util_series = [("5h", GB["orange"], s5), ("7d (semanal)", GB["blue"], s7)]
+
+    cards = [
+        ("Gasto del rango", money(cost), GB["green"]),
+        ("Media/día", money(avg_day), GB["yellow"]),
+        ("Mensajes", f"{msgs:,}", GB["blue"]),
+        ("Tokens", fmt_tok(toks), GB["aqua"]),
+        ("Top modelo", model_data[0][0] if model_data else "—", GB["orange"]),
+    ]
+    cards_html = "".join(
+        f"<div class='card'><div class='card-v' style='color:{col}'>{_esc(v)}</div>"
+        f"<div class='card-l'>{_esc(l)}</div></div>" for (l, v, col) in cards)
+    model_legend = "".join(
+        f"<span class='leg'><i style='background:{c}'></i>{_esc(m)} {money(v)}</span>"
+        for (m, v, c) in model_data)
+    proj_panel = (f"<div class='panel'><h2>Gasto por proyecto</h2>{_hbars(proj_data)}</div>"
+                  if proj_data else "")
+    scope = f"{start} → {end}  ·  {span} día(s)"
+    if project:
+        scope += f"  ·  proyecto: {_esc(project)}"
+
+    html = f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude · Informe {start} → {end}</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  * {{ box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+  body {{ margin:0; background:{GB['bg']}; color:{GB['fg']};
+    font-family:'JetBrains Mono','DejaVu Sans Mono',ui-monospace,monospace;
+    padding:28px clamp(16px,4vw,48px); }}
+  h1 {{ font-size:20px; font-weight:600; margin:0 0 2px; }}
+  .sub {{ color:{GB['muted']}; font-size:12px; margin-bottom:22px; }}
+  .cards {{ display:grid; gap:12px; margin-bottom:24px;
+    grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }}
+  .card {{ background:{GB['panel']}; border:1px solid {GB['grid']};
+    border-radius:10px; padding:14px 16px; }}
+  .card-v {{ font-size:24px; font-weight:700; }}
+  .card-l {{ color:{GB['muted']}; font-size:12px; margin-top:4px; }}
+  .panel {{ background:{GB['panel']}; border:1px solid {GB['grid']};
+    border-radius:12px; padding:16px 18px 12px; margin-bottom:18px;
+    break-inside:avoid; }}
+  .panel h2 {{ font-size:13px; font-weight:600; margin:0 0 12px;
+    text-transform:uppercase; letter-spacing:1px; }}
+  .chart {{ width:100%; height:auto; display:block; }}
+  .empty {{ color:{GB['muted']}; font-size:13px; padding:14px 0; }}
+  .hbar-row {{ display:flex; align-items:center; gap:12px; margin:7px 0; font-size:13px; }}
+  .hbar-lbl {{ width:130px; flex:none; }}
+  .hbar-track {{ flex:1; height:14px; background:{GB['panel2']};
+    border-radius:7px; overflow:hidden; }}
+  .hbar-fill {{ display:block; height:100%; border-radius:7px; }}
+  .hbar-val {{ width:90px; flex:none; text-align:right; color:{GB['muted']}; }}
+  .legend {{ margin-top:10px; display:flex; flex-wrap:wrap; gap:14px;
+    font-size:12px; color:{GB['muted']}; }}
+  .leg i {{ display:inline-block; width:10px; height:10px; border-radius:3px;
+    margin-right:6px; vertical-align:-1px; }}
+  footer {{ color:{GB['muted']}; font-size:11px; margin-top:8px; }}
+</style></head>
+<body>
+  <h1>󰧑 Claude Code · informe de gasto</h1>
+  <div class="sub">{scope}  ·  generado {now.strftime('%d %b %Y · %H:%M')}  ·  datos locales</div>
+  <div class="cards">{cards_html}</div>
+  <div class="panel"><h2>{ts_title} <span></span></h2>{_vbars(ts, color=GB['yellow'])}</div>
+  <div class="panel"><h2>Gasto por modelo</h2>{_hbars(model_data)}
+    <div class="legend">{model_legend}</div></div>
+  {proj_panel}
+  <div class="panel"><h2>% de uso de las ventanas</h2>{_line(util_series)}
+    <div class="legend">
+      <span class="leg"><i style="background:{GB['orange']}"></i>ventana 5h</span>
+      <span class="leg"><i style="background:{GB['blue']}"></i>ventana semanal (7d)</span>
+    </div></div>
+  <footer>Generado por <code>claude-metrics report</code> · coste = equivalente
+    API · tokens y coste reconstruidos de los transcripts locales.</footer>
+</body></html>"""
+    return html
+
+
 def dashboard(con, open_browser=True):
     _ingest_if_stale(con)
     html = build_dashboard_html(con)
@@ -1128,14 +1297,18 @@ def _find_chromium():
     return None
 
 
-def report_pdf(con, out_path=None):
-    """Genera el dashboard HTML y lo imprime a PDF con un navegador headless.
-    Si no hay navegador Chromium, abre el HTML para 'Imprimir → Guardar PDF'."""
+def report_pdf(con, out_path=None, days=None, dfrom=None, dto=None,
+               all_time=False, project=None):
+    """Genera el informe HTML del RANGO pedido y lo imprime a PDF con un
+    navegador headless. Sin rango → últimos 30 días. Si no hay Chromium, abre
+    el HTML para 'Imprimir → Guardar PDF'."""
     from pathlib import Path
     _ensure_bootstrapped(con)
     _ingest_if_stale(con)
-    html = build_dashboard_html(con)
-    html_path = os.path.join(DATA_DIR, "dashboard.html")
+    start, end = _report_window(con, days=days, dfrom=dfrom, dto=dto,
+                                all_time=all_time)
+    html = build_report_html(con, start, end, project=project)
+    html_path = os.path.join(DATA_DIR, "report.html")
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -1241,9 +1414,34 @@ def main():
     elif cmd == "csv":
         sys.exit(export_csv(con, args[1] if len(args) > 1 else None))
     elif cmd == "report":
-        # report [salida.pdf]  ·  --pdf admitido por simetría
-        path = next((a for a in args[1:] if not a.startswith("-")), None)
-        sys.exit(report_pdf(con, path))
+        # report [salida.pdf] [--days N | --all | --from D --to D] [--project P]
+        rest = args[1:]
+        path = days = dfrom = dto = project = None
+        all_time = False
+        skip = False
+        for i, a in enumerate(rest):
+            if skip:
+                skip = False
+                continue
+            nxt = rest[i + 1] if i + 1 < len(rest) else None
+            if a == "--all":
+                all_time = True
+            elif a == "--days" and nxt is not None:
+                try:
+                    days = int(nxt)
+                except ValueError:
+                    pass
+                skip = True
+            elif a == "--from" and nxt is not None:
+                dfrom, skip = nxt, True
+            elif a == "--to" and nxt is not None:
+                dto, skip = nxt, True
+            elif a == "--project" and nxt is not None:
+                project, skip = nxt, True
+            elif not a.startswith("-") and path is None:
+                path = a
+        sys.exit(report_pdf(con, path, days=days, dfrom=dfrom, dto=dto,
+                            all_time=all_time, project=project))
     elif cmd == "config":
         sys.exit(cmd_config())
     elif cmd == "db":

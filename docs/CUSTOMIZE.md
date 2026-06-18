@@ -62,11 +62,16 @@ point it at `platform/` and `install.{sh,ps1}`.
 ## Exports & reports
 
 ```sh
-claude-metrics report                 # PDF to ~/.local/share/claude-metrics/
-claude-metrics report ~/spend.pdf     # PDF to a path you choose
-claude-metrics csv ~/spend.csv        # hourly detail for a spreadsheet
-claude-metrics export                 # metrics.json (feeds the Astro dashboard)
+claude-metrics report                       # last 30 days → PDF
+claude-metrics report ~/spend.pdf --days 7   # a chosen window, to a chosen path
+claude-metrics report --from 2026-06-01 --to 2026-06-15
+claude-metrics report --all --project myrepo # all-time, one project
+claude-metrics csv ~/spend.csv               # hourly detail for a spreadsheet
+claude-metrics export                        # metrics.json (feeds the Astro dashboard)
 ```
+
+In the **web dashboard**, the PDF button exports whatever range (and project
+filter) you currently have selected — no need to pass flags.
 
 `report` uses a headless Chromium/Chrome/Brave/Edge if present; otherwise it
 opens the HTML so you can "Print → Save as PDF".

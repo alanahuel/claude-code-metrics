@@ -70,7 +70,7 @@ claude-metrics projects [N]   # spend per project/folder, last N days
 claude-metrics months         # month-over-month comparison
 claude-metrics total          # all-time tokens & cost
 claude-metrics dashboard      # generate + open the HTML dashboard
-claude-metrics report [f.pdf] # export the dashboard to PDF (headless browser)
+claude-metrics report [f.pdf] [--days N|--all|--from D --to D] [--project P]  # ranged PDF report
 claude-metrics csv [f.csv]    # export hourly detail for a spreadsheet
 claude-metrics config         # show/create the config file
 claude-metrics ingest         # rebuild history now

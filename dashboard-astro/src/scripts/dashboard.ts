@@ -965,7 +965,13 @@ async function boot() {
 
   const pdfBtn = document.getElementById('pdfBtn') as HTMLButtonElement | null;
   const csvBtn = document.getElementById('csvBtn') as HTMLButtonElement | null;
-  pdfBtn?.addEventListener('click', () => downloadExport(pdfBtn, '/api/report.pdf'));
+  // El PDF refleja el rango (y filtro de proyecto) seleccionados ahora mismo.
+  const reportUrl = () => {
+    const p = new URLSearchParams({ range: CURRENT });
+    if (FILTER) p.set('project', FILTER);
+    return '/api/report.pdf?' + p.toString();
+  };
+  pdfBtn?.addEventListener('click', () => downloadExport(pdfBtn, reportUrl()));
   csvBtn?.addEventListener('click', () => downloadExport(csvBtn, '/api/export.csv'));
 
   render();
