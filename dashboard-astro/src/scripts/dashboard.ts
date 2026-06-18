@@ -899,6 +899,42 @@ function initTheme() {
   if (btn) btn.onclick = () => applyTheme(THEME === 'dark' ? 'light' : 'dark');
 }
 
+// ─── Exportar (PDF / CSV) ─────────────────────────────────────────────────────
+// Llama al endpoint del propio servidor (que ejecuta el CLI local) y dispara la
+// descarga. Sin terminal. Da feedback en el propio botón.
+async function downloadExport(btn: HTMLButtonElement, url: string) {
+  if (btn.getAttribute('aria-busy') === 'true') return;
+  const orig = btn.textContent || '';
+  btn.setAttribute('aria-busy', 'true');
+  btn.textContent = '···';
+  try {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch { /* binario/no-json */ }
+      throw new Error(detail);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('content-disposition') || '';
+    const m = cd.match(/filename="([^"]+)"/);
+    const name = m ? m[1] : (url.split('/').pop() || 'export');
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(objUrl);
+    btn.textContent = '✓';
+    btn.title = 'Descargado';
+    setTimeout(() => { btn.textContent = orig; }, 1400);
+  } catch (e) {
+    btn.textContent = '✕';
+    btn.title = 'Error: ' + String(e);
+    setTimeout(() => { btn.textContent = orig; }, 2400);
+  } finally {
+    btn.removeAttribute('aria-busy');
+  }
+}
+
 // ─── Arranque ────────────────────────────────────────────────────────────────
 async function boot() {
   initTheme();
@@ -926,6 +962,11 @@ async function boot() {
       render();
     };
   });
+
+  const pdfBtn = document.getElementById('pdfBtn') as HTMLButtonElement | null;
+  const csvBtn = document.getElementById('csvBtn') as HTMLButtonElement | null;
+  pdfBtn?.addEventListener('click', () => downloadExport(pdfBtn, '/api/report.pdf'));
+  csvBtn?.addEventListener('click', () => downloadExport(csvBtn, '/api/export.csv'));
 
   render();
   window.addEventListener('resize', () => Object.values(charts).forEach((c) => c.resize()));
