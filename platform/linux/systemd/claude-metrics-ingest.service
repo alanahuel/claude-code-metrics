@@ -1,0 +1,6 @@
+[Unit]
+Description=Rebuild Claude Code token/cost history (claude-metrics)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-metrics ingest

@@ -1,0 +1,33 @@
+# ── Datos locales y secretos: NUNCA se versionan ──────────────────────────
+# La base de datos, la caché, los tokens y los exports viven solo en la
+# máquina del usuario (~/.local/share/claude-metrics, ~/.config/claude-usage).
+# Por si alguien clona el repo dentro de esas rutas, los ignoramos de todos modos.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+accounts.json
+cache.json
+metrics.json
+dashboard.html
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── Astro / Node (dashboard opcional) ─────────────────────────────────────
+dashboard-astro/node_modules/
+dashboard-astro/dist/
+dashboard-astro/.astro/
+node_modules/
+dist/
+
+# ── Sistema ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.bak
+*.bak.*
+*.tmp

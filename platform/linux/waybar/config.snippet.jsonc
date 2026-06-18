@@ -1,0 +1,29 @@
+// ── Claude Code metrics — waybar modules ─────────────────────────────────
+// Copy these two module definitions into your ~/.config/waybar/config.jsonc
+// (inside the top-level object) and add "custom/claude" and/or
+// "custom/claude-metrics" to one of your "modules-left/center/right" arrays.
+// Then reload waybar:  killall -SIGUSR2 waybar
+//
+//   custom/claude         → live limit windows (5h / 7d / Opus) with % bars.
+//                           Click = desktop notification with the breakdown.
+//   custom/claude-metrics → real $ spend + tokens (today / month) from SQLite.
+//                           Click = open the dashboard.
+
+  "custom/claude": {
+    "exec": "$HOME/.local/bin/claude-usage waybar",
+    "return-type": "json",
+    "interval": 120,
+    "signal": 11,
+    "on-click": "$HOME/.local/bin/claude-usage notify",
+    "on-click-right": "$HOME/.local/bin/claude-usage notify"
+  },
+
+  "custom/claude-metrics": {
+    "exec": "$HOME/.local/bin/claude-metrics waybar",
+    "return-type": "json",
+    "interval": 300,
+    // Astro dashboard (optional). For the zero-dependency HTML dashboard use:
+    //   "$HOME/.local/bin/claude-metrics dashboard"
+    "on-click": "xdg-open http://127.0.0.1:4319",
+    "on-click-right": "$HOME/.local/bin/claude-metrics dashboard"
+  },

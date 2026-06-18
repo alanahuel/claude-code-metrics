@@ -1,0 +1,141 @@
+---
+import '@fontsource-variable/hanken-grotesk';
+import '@fontsource-variable/jetbrains-mono';
+import '../styles/global.css';
+
+export const prerender = false;
+const ranges = [
+  { id: '24h', label: '24 h' },
+  { id: '7d', label: '7 días' },
+  { id: '30d', label: '30 días' },
+  { id: '90d', label: '90 días' },
+  { id: 'all', label: 'Todo' },
+];
+---
+
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Claude · Métricas</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="glyph">◆</div>
+          <div>
+            <h1>Claude Code · Métricas</h1>
+            <div class="sub">Gasto real (equivalente API) y uso · datos locales</div>
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <div class="updated"><span class="dot"></span><span id="updated">cargando…</span></div>
+        <button class="theme-btn" id="themeBtn" title="Modo día / noche" aria-label="Cambiar tema">☀</button>
+      </header>
+
+      <div class="controls">
+        <div class="segmented" id="range" role="group" aria-label="Rango temporal">
+          {ranges.map((r, i) => (
+            <button data-range={r.id} aria-pressed={r.id === '30d' ? 'true' : 'false'}>{r.label}</button>
+          ))}
+        </div>
+        <span class="filter-chip" id="projFilterChip" hidden></span>
+        <div class="meta" id="rangeMeta"></div>
+      </div>
+
+      <section class="kpis" id="kpis">
+        <div class="kpi"><div class="label">cargando</div><div class="value skeleton">···</div></div>
+      </section>
+
+      <div class="grid cols-2" style="margin-top:4px">
+        <div class="panel">
+          <div class="head">
+            <h2>Gasto en el tiempo</h2>
+            <span class="hint" id="granLabel"></span>
+            <div class="spacer"></div>
+            <span class="pill" id="stackPill">apilado por modelo</span>
+          </div>
+          <div class="legend" id="modelLegend"></div>
+          <div class="chart" id="spendChart" style="height:300px"></div>
+        </div>
+        <div class="panel">
+          <div class="head"><h2>Reparto por modelo</h2><div class="spacer"></div><span class="hint" id="modelTotal"></span></div>
+          <div class="chart" id="donutChart" style="height:300px"></div>
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:16px">
+        <div class="panel">
+          <div class="head"><h2>Comparativa mensual</h2><span class="hint">todo el histórico</span><div class="spacer"></div><span class="hint" id="momHint"></span></div>
+          <div class="chart" id="monthChart" style="height:258px"></div>
+        </div>
+        <div class="panel">
+          <div class="head"><h2>Coste por proyecto</h2><div class="spacer"></div><span class="hint" id="projHint"></span></div>
+          <div class="chart" id="projectChart" style="height:258px"></div>
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:16px">
+        <div class="panel">
+          <div class="head"><h2>Tokens en el tiempo</h2><span class="hint">entrada · salida · caché</span></div>
+          <div class="chart" id="tokenChart" style="height:240px"></div>
+        </div>
+        <div class="panel">
+          <div class="head"><h2>Patrón por hora del día</h2><span class="hint">gasto agregado · 0–23 h</span></div>
+          <div class="chart" id="hourChart" style="height:240px"></div>
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:16px">
+        <div class="panel">
+          <div class="head"><h2>% de uso de las ventanas</h2><span class="hint">5 h · semanal (snapshots)</span></div>
+          <div class="chart" id="utilChart" style="height:240px"></div>
+        </div>
+        <div class="panel">
+          <div class="head"><h2>Detalle</h2><div class="spacer"></div><span class="hint" id="tableHint"></span></div>
+          <div class="tablewrap"><table id="detailTable"><thead></thead><tbody></tbody></table></div>
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:16px">
+        <div class="panel">
+          <div class="head">
+            <h2>Rendimiento de tokens · evolución</h2>
+            <span class="hint">% de ventana por 100k tok · global</span>
+            <div class="spacer"></div>
+            <span class="hint mono" id="yieldStat"></span>
+          </div>
+          <div class="chart" id="yieldChart" style="height:250px"></div>
+          <div style="padding:2px 18px 14px"><span class="hint" id="yieldNote"></span></div>
+        </div>
+        <div class="panel">
+          <div class="head"><h2>Rendimiento por modelo</h2><span class="hint">ventana 5h · descompuesto ahora (NNLS)</span></div>
+          <div class="chart" id="yieldModelChart" style="height:250px"></div>
+          <div style="padding:2px 18px 14px"><span class="hint" id="yieldModelNote"></span></div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px">
+        <div class="head">
+          <h2>Rendimiento por modelo · evolución</h2>
+          <span class="hint">% por 100k tokens (ventana 5h), registrado por día</span>
+        </div>
+        <div class="chart" id="yieldEvoChart" style="height:260px"></div>
+        <div style="padding:2px 18px 14px"><span class="hint" id="yieldEvoNote"></span></div>
+      </div>
+
+      <div class="foot">
+        Servido localmente por <code>claude-metrics-dashboard</code> ·
+        datos vía <code>claude-metrics export</code> · sin telemetría externa
+      </div>
+    </div>
+
+    <script>
+      import '../scripts/dashboard.ts';
+    </script>
+  </body>
+</html>

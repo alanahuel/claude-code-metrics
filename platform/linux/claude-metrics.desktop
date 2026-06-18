@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Metrics
+GenericName=Claude Code spend & usage
+Comment=Local dashboard of real spend and usage history for Claude Code
+Exec=xdg-open http://127.0.0.1:4319
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Utility;Development;
+Keywords=claude;metrics;tokens;cost;spend;dashboard;

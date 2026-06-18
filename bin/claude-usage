@@ -1,0 +1,637 @@
+#!/usr/bin/python3
+"""claude-usage — monitor de límites de Claude Code para waybar.
+
+Consulta el endpoint OAuth no documentado de Anthropic
+(https://api.anthropic.com/api/oauth/usage) y muestra el uso de las
+ventanas de límite: 5h, semanal (7d) y, como tercera, la semanal de Opus
+si el plan la expone (Max 20x) o la de Sonnet en su defecto.
+
+Soporta varias suscripciones:
+  - La cuenta "live" lee ~/.claude/.credentials.json (la gestiona Claude
+    Code; aquí solo se lee, nunca se reescribe, para no romper su sesión).
+  - Las cuentas "stored" guardan sus propios tokens en
+    ~/.config/claude-usage/accounts.json y se refrescan solas.
+
+Subcomandos:
+  waybar (def.)  Imprime JSON para waybar.
+  show           Resumen legible por terminal.
+  notify         Notificación de escritorio con el desglose.
+  add NOMBRE     Guarda la cuenta logueada AHORA como cuenta extra.
+  list           Lista las cuentas configuradas.
+  remove NOMBRE  Elimina una cuenta extra.
+"""
+
+import glob
+import json
+import os
+import sys
+import ssl
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone, timedelta
+
+# --- Constantes -------------------------------------------------------------
+HOME = os.path.expanduser("~")
+LIVE_CREDS = os.path.join(HOME, ".claude", ".credentials.json")
+CFG_DIR = os.path.join(HOME, ".config", "claude-usage")
+ACCOUNTS_FILE = os.path.join(CFG_DIR, "accounts.json")
+CACHE_FILE = os.path.join(CFG_DIR, "cache.json")
+
+# Transcripts locales de Claude Code: de aquí salen los recuentos de tokens
+# (la API OAuth solo expone porcentajes de uso, no totales). Es 100% local,
+# así que sumar tokens NO consume ninguna llamada a la API.
+LOG_DIR = os.path.join(HOME, ".claude", "projects")
+WINDOW_SECS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}
+
+REFRESH_TTL = 100  # segundos: no re-consultar la API si el dato es más nuevo
+
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+# Client ID público de Claude Code (OAuth). Solo se usa para refrescar
+# cuentas "stored"; la cuenta live nunca se refresca aquí.
+CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+ICON = "\U000f09d1"  # 󰧑  nf-md-brain
+
+# Colores legibles tanto en temas oscuros como claros (estilo gruvbox).
+COL_OK = "#98971a"    # < 50%  (verde)
+COL_MID = "#d79921"   # >= 50%
+COL_HIGH = "#d65d0e"  # >= 80%
+COL_CRIT = "#cc241d"  # >= 95%
+
+# Etiquetas cortas por ventana.
+LABELS = {
+    "five_hour": "5h",
+    "seven_day": "7d",
+    "seven_day_opus": "op",
+    "seven_day_sonnet": "so",
+}
+LONG_LABELS = {
+    "five_hour": "5 horas",
+    "seven_day": "Semanal",
+    "seven_day_opus": "Semanal Opus",
+    "seven_day_sonnet": "Semanal Sonnet",
+}
+
+
+# --- Utilidades -------------------------------------------------------------
+def now_ms():
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def read_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def write_json(path, data, mode=0o600):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def ssl_ctx():
+    return ssl.create_default_context()
+
+
+# --- Cuentas ----------------------------------------------------------------
+def load_accounts():
+    """Devuelve la lista de cuentas. Crea el archivo en el primer uso."""
+    if os.path.exists(ACCOUNTS_FILE):
+        try:
+            data = read_json(ACCOUNTS_FILE)
+            accts = data.get("accounts", [])
+            if accts:
+                return accts
+        except (json.JSONDecodeError, OSError):
+            pass
+    # Primer arranque: solo la cuenta live.
+    default = {"accounts": [{"name": "Principal", "source": "live"}]}
+    try:
+        write_json(ACCOUNTS_FILE, default)
+    except OSError:
+        pass
+    return default["accounts"]
+
+
+def save_accounts(accts):
+    write_json(ACCOUNTS_FILE, {"accounts": accts})
+
+
+def live_oauth():
+    """OAuth de la cuenta actualmente logueada en Claude Code (solo lectura)."""
+    return read_json(LIVE_CREDS)["claudeAiOauth"]
+
+
+def refresh_stored(acct):
+    """Refresca el access token de una cuenta 'stored' usando su refresh token.
+    Devuelve el access token vigente. Persiste los tokens nuevos."""
+    rt = acct.get("refresh_token")
+    if not rt:
+        raise RuntimeError("sin refresh_token")
+    body = json.dumps({
+        "grant_type": "refresh_token",
+        "refresh_token": rt,
+        "client_id": CLIENT_ID,
+    }).encode()
+    req = urllib.request.Request(
+        TOKEN_URL, data=body, method="POST",
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10, context=ssl_ctx()) as r:
+        tok = json.loads(r.read().decode())
+    acct["access_token"] = tok["access_token"]
+    if tok.get("refresh_token"):
+        acct["refresh_token"] = tok["refresh_token"]
+    acct["expires_at"] = now_ms() + int(tok.get("expires_in", 0)) * 1000
+    return acct["access_token"]
+
+
+def token_for(acct, accts):
+    """Devuelve un access token utilizable para la cuenta dada."""
+    src = acct.get("source", "live")
+    if src == "live":
+        o = live_oauth()
+        # No refrescamos la cuenta live (la gestiona Claude Code).
+        return o["accessToken"], (o.get("expiresAt", 0) <= now_ms())
+    # stored
+    if acct.get("expires_at", 0) <= now_ms() + 60_000:
+        refresh_stored(acct)
+        save_accounts(accts)  # persiste tokens rotados
+    return acct["access_token"], False
+
+
+def account_meta(acct):
+    """subscriptionType / rateLimitTier legibles, si se pueden leer."""
+    try:
+        if acct.get("source", "live") == "live":
+            o = live_oauth()
+            return o.get("subscriptionType"), o.get("rateLimitTier")
+    except OSError:
+        pass
+    return acct.get("subscriptionType"), acct.get("rateLimitTier")
+
+
+# --- API --------------------------------------------------------------------
+def fetch_usage(token):
+    req = urllib.request.Request(USAGE_URL, headers={
+        "Accept": "application/json",
+        "Authorization": "Bearer " + token,
+        "anthropic-beta": "oauth-2025-04-20",
+    })
+    with urllib.request.urlopen(req, timeout=10, context=ssl_ctx()) as r:
+        return json.loads(r.read().decode())
+
+
+def pick_windows(usage):
+    """Selecciona las tres ventanas a mostrar: 5h, 7d y (Opus|Sonnet)."""
+    out = []
+    for key in ("five_hour", "seven_day"):
+        w = usage.get(key)
+        if isinstance(w, dict) and w.get("utilization") is not None:
+            out.append((key, w))
+    # Tercera ventana: Opus semanal si existe (Max 20x), si no Sonnet.
+    for key in ("seven_day_opus", "seven_day_sonnet"):
+        w = usage.get(key)
+        if isinstance(w, dict) and w.get("utilization") is not None:
+            out.append((key, w))
+            break
+    return out
+
+
+# --- Conteo de tokens (local, sin API) --------------------------------------
+def _parse_iso(s):
+    """Parsea un timestamp ISO 8601 (admite el sufijo 'Z')."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def window_starts(windows):
+    """Inicio (UTC) de las ventanas 5h y 7d.
+
+    Si la API dio 'resets_at' usamos reset - duración (el inicio real de la
+    ventana de límite); si no, caemos a una ventana deslizante desde ahora.
+    """
+    now = datetime.now(timezone.utc)
+    wd = dict(windows)
+    starts = {}
+    for key in ("five_hour", "seven_day"):
+        dur = timedelta(seconds=WINDOW_SECS[key])
+        w = wd.get(key)
+        reset = _parse_iso(w.get("resets_at")) if isinstance(w, dict) else None
+        starts[key] = (reset - dur) if reset else (now - dur)
+    return starts
+
+
+def count_tokens(starts):
+    """Suma los tokens de los transcripts locales por ventana.
+
+    'starts' es {ventana: datetime_inicio}. Devuelve
+    {ventana: {'in','out','cw','cr','total'}}. Solo abre archivos modificados
+    dentro de la ventana más antigua y deduplica por (id de mensaje,
+    requestId) para no contar dos veces las sesiones reanudadas/compactadas.
+    """
+    totals = {k: {"in": 0, "out": 0, "cw": 0, "cr": 0} for k in starts}
+    if not starts:
+        return totals
+    cutoff = min(starts.values()).timestamp() - 1  # margen de 1 s
+    seen = set()
+    try:
+        files = glob.glob(os.path.join(LOG_DIR, "*", "*.jsonl"))
+    except OSError:
+        files = []
+    for path in files:
+        try:
+            if os.path.getmtime(path) < cutoff:
+                continue
+        except OSError:
+            continue
+        try:
+            fh = open(path, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if '"usage"' not in line:  # filtro barato antes de parsear
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                msg = o.get("message") or {}
+                u = msg.get("usage")
+                if not isinstance(u, dict):
+                    continue
+                ts = _parse_iso(o.get("timestamp"))
+                if ts is None:
+                    continue
+                dkey = (msg.get("id"), o.get("requestId"))
+                if dkey != (None, None):
+                    if dkey in seen:
+                        continue
+                    seen.add(dkey)
+                vals = (
+                    u.get("input_tokens") or 0,
+                    u.get("output_tokens") or 0,
+                    u.get("cache_creation_input_tokens") or 0,
+                    u.get("cache_read_input_tokens") or 0,
+                )
+                for wkey, start in starts.items():
+                    if ts >= start:
+                        t = totals[wkey]
+                        t["in"] += vals[0]
+                        t["out"] += vals[1]
+                        t["cw"] += vals[2]
+                        t["cr"] += vals[3]
+    for t in totals.values():
+        t["total"] = t["in"] + t["out"] + t["cw"] + t["cr"]
+    return totals
+
+
+def fmt_tokens(n):
+    """Número compacto: 1234 -> 1.2k, 1234567 -> 1.2M, 1.2e9 -> 1.2G."""
+    if n >= 1_000_000_000:
+        return f"{n / 1e9:.1f}G"
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1e3:.1f}k"
+    return str(int(n))
+
+
+# --- Formato ----------------------------------------------------------------
+def severity(pct):
+    if pct >= 95:
+        return "crit", COL_CRIT
+    if pct >= 80:
+        return "high", COL_HIGH
+    if pct >= 50:
+        return "mid", COL_MID
+    return "ok", None
+
+
+def progress_bar(pct, width=14):
+    """Barra pango █/░ coloreada según severidad. La parte llena toma el color
+    del nivel (verde<50, ámbar<80, naranja<95, rojo); la vacía va atenuada."""
+    pct = max(0.0, min(100.0, float(pct)))
+    filled = int(round(pct / 100 * width))
+    if pct > 0 and filled == 0:
+        filled = 1  # cualquier uso >0 muestra al menos un bloque
+    _, col = severity(round(pct))
+    col = col or COL_OK
+    fill = "█" * filled
+    empty = "░" * (width - filled)
+    return (f"<span foreground='{col}'>{fill}</span>"
+            f"<span alpha='35%'>{empty}</span>")
+
+
+def fmt_reset(iso):
+    """Cuenta atrás compacta a partir de un timestamp ISO 8601."""
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return ""
+    delta = dt - datetime.now(timezone.utc)
+    secs = int(delta.total_seconds())
+    if secs <= 0:
+        return "ya"
+    m = secs // 60
+    if m < 60:
+        return f"{m}m"
+    h, m = divmod(m, 60)
+    if h < 24:
+        return f"{h}h {m}m"
+    local = dt.astimezone()
+    return local.strftime("%d %b %H:%M")
+
+
+def pango_escape(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def account_segment(name, windows, multi):
+    """Texto pango compacto de una cuenta para la barra (solo porcentajes;
+    el desglose de tokens vive en el tooltip)."""
+    parts = []
+    worst = "ok"
+    order = {"ok": 0, "mid": 1, "high": 2, "crit": 3}
+    for key, w in windows:
+        pct = round(w["utilization"])
+        sev, col = severity(pct)
+        if order[sev] > order[worst]:
+            worst = sev
+        lbl = LABELS.get(key, key)
+        lbl_s = f"<span alpha='62%'>{lbl}</span>"
+        pct_s = f"{pct}%" if col is None else f"<span foreground='{col}'>{pct}%</span>"
+        parts.append(f"{lbl_s} {pct_s}")
+    seg = " · ".join(parts)
+    if multi:
+        seg = f"<span alpha='62%'>{pango_escape(name)}</span> {seg}"
+    return seg, worst
+
+
+def build_output(accts):
+    """Devuelve (dict_para_waybar, hubo_error)."""
+    segments = []
+    tooltip_lines = []
+    overall = "ok"
+    order = {"ok": 0, "mid": 1, "high": 2, "crit": 3, "stale": 0, "error": 0}
+    multi = len(accts) > 1
+    errors = 0
+
+    for acct in accts:
+        name = acct.get("name", "?")
+        sub, tier = account_meta(acct)
+        try:
+            token, stale = token_for(acct, accts)
+            usage = fetch_usage(token)
+            windows = pick_windows(usage)
+        except Exception as e:  # noqa: BLE001  (queremos degradar con gracia)
+            errors += 1
+            segments.append(f"<span alpha='62%'>{pango_escape(name)} ?</span>" if multi else "?")
+            tooltip_lines.append(f"<b>{pango_escape(name)}</b> — error: {pango_escape(str(e)[:60])}")
+            continue
+
+        # Tokens locales: solo para la cuenta live (los transcripts de
+        # ~/.claude son de esta máquina; alineamos las ventanas con sus
+        # resets_at). Las cuentas "stored" no llevan recuento de tokens.
+        tok = None
+        if acct.get("source", "live") == "live":
+            try:
+                tok = count_tokens(window_starts(windows))
+            except Exception:  # noqa: BLE001  (un fallo de IO no debe tumbar la barra)
+                tok = None
+
+        seg, worst = account_segment(name, windows, multi)
+        segments.append(seg)
+        if order[worst] > order[overall]:
+            overall = worst
+
+        # --- Tooltip detallado (desplegable al pasar el ratón) -------------
+        # Cabecera: cuenta + plan.
+        head = f"<b>{pango_escape(name)}</b>"
+        if sub:
+            tier_h = (tier or "").replace("default_claude_", "").replace("_", " ")
+            head += f"  <span alpha='55%'>{pango_escape(sub)} · {pango_escape(tier_h)}</span>"
+        if stale:
+            head += "  <span alpha='55%'>(token caducado — abre Claude Code)</span>"
+        tooltip_lines.append(head)
+        tooltip_lines.append("")
+        # Una fila por ventana: etiqueta · barra · % · cuándo se reinicia,
+        # y debajo, atenuado, el recuento de tokens (5h y semanal).
+        for key, w in windows:
+            pct = round(w["utilization"])
+            _, col = severity(pct)
+            bar = progress_bar(w["utilization"])
+            pct_txt = f"{pct:>3}%"
+            if col:
+                pct_txt = f"<span foreground='{col}'>{pct_txt}</span>"
+            rs = fmt_reset(w.get("resets_at"))
+            rs_s = f"   <span alpha='55%'>↺ {rs}</span>" if rs else ""
+            tooltip_lines.append(f"{LONG_LABELS.get(key, key):<15}{bar} {pct_txt}{rs_s}")
+            if tok and key in tok:
+                t = tok[key]
+                tooltip_lines.append(
+                    f"{'':<15}<span alpha='50%'>{fmt_tokens(t['total'])} tok · "
+                    f"in {fmt_tokens(t['in'])} · out {fmt_tokens(t['out'])} · "
+                    f"cache {fmt_tokens(t['cw'] + t['cr'])}</span>"
+                )
+        tooltip_lines.append("")
+
+    text = f"{ICON} " + "  <span alpha='40%'>│</span>  ".join(segments)
+    # Leyenda al pie para que se entienda de un vistazo qué es cada cosa.
+    tooltip_lines.append(
+        "<span alpha='45%'>barra = % del límite · ↺ reinicio · "
+        "tok = tokens locales (sin coste API)</span>"
+    )
+    # Fuente monoespaciada: alinea etiquetas, barras y porcentajes en columnas.
+    body = "\n".join(tooltip_lines).rstrip()
+    tooltip = f"<span font_family='monospace'>{body}</span>"
+    cls = "error" if errors == len(accts) else overall
+    return {"text": text, "tooltip": tooltip, "class": cls}, errors > 0
+
+
+# --- Salidas ----------------------------------------------------------------
+def _load_cache():
+    try:
+        c = read_json(CACHE_FILE)
+        return c.get("out"), c.get("ts", 0)
+    except (OSError, json.JSONDecodeError):
+        return None, 0
+
+
+def _print_stale(out):
+    out = dict(out)
+    out["class"] = "stale"
+    print(json.dumps(out))
+
+
+def cmd_waybar():
+    accts = load_accounts()
+    cached, ts = _load_cache()
+    age = (now_ms() - ts) / 1000
+
+    # 1) Dato reciente en caché -> no tocar la API (evita saturarla).
+    if cached is not None and age < REFRESH_TTL:
+        print(json.dumps(cached))
+        return
+
+    # 2) Consultar la API.
+    try:
+        out, had_error = build_output(accts)
+    except Exception as e:  # noqa: BLE001  (red caída, etc.)
+        if cached is not None:
+            _print_stale(cached)
+        else:
+            print(json.dumps({"text": f"{ICON} ?", "tooltip": f"Error: {e}", "class": "error"}))
+        return
+
+    if not had_error:
+        try:
+            write_json(CACHE_FILE, {"ts": now_ms(), "out": out}, mode=0o600)
+        except OSError:
+            pass
+        print(json.dumps(out))
+    else:
+        # Fallo parcial/total (p.ej. 429): servir el último valor bueno.
+        if cached is not None:
+            _print_stale(cached)
+        else:
+            print(json.dumps(out))
+
+
+def _plain_breakdown(accts):
+    lines = []
+    for acct in accts:
+        name = acct.get("name", "?")
+        sub, tier = account_meta(acct)
+        header = name + (f" ({sub} {tier})" if sub else "")
+        lines.append(header)
+        try:
+            token, stale = token_for(acct, accts)
+            usage = fetch_usage(token)
+            windows = pick_windows(usage)
+            tok = None
+            if acct.get("source", "live") == "live":
+                try:
+                    tok = count_tokens(window_starts(windows))
+                except Exception:  # noqa: BLE001
+                    tok = None
+            for key, w in windows:
+                pct = round(w["utilization"])
+                rs = fmt_reset(w.get("resets_at"))
+                rs = f"  (reset {rs})" if rs else ""
+                lines.append(f"  {LONG_LABELS.get(key, key):<14} {pct:>3}%{rs}")
+                if tok and key in tok:
+                    t = tok[key]
+                    lines.append(
+                        f"  {'':<14} {fmt_tokens(t['total'])} tok "
+                        f"(in {fmt_tokens(t['in'])} · out {fmt_tokens(t['out'])} · "
+                        f"cache {fmt_tokens(t['cw'] + t['cr'])})"
+                    )
+            if stale:
+                lines.append("  token caducado — abre Claude Code")
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"  error: {e}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def cmd_show():
+    print(_plain_breakdown(load_accounts()))
+
+
+def _notify(title, body):
+    """Notificación de escritorio multiplataforma; si no hay backend, imprime."""
+    import subprocess
+    try:
+        if sys.platform == "darwin":  # macOS
+            txt = body.replace('"', "'")
+            subprocess.run(
+                ["osascript", "-e",
+                 f'display notification "{txt}" with title "{title}"'],
+                check=False)
+            return
+        if sys.platform.startswith("win"):  # Windows: sin deps -> a consola
+            print(f"{title}\n{body}")
+            return
+        subprocess.run(["notify-send", "-u", "low", title, body], check=False)  # Linux/*BSD
+    except (OSError, subprocess.SubprocessError):
+        print(f"{title}\n{body}")
+
+
+def cmd_notify():
+    _notify("Claude Code — uso", _plain_breakdown(load_accounts()))
+
+
+def cmd_add(name):
+    if not name:
+        print("uso: claude-usage add NOMBRE", file=sys.stderr)
+        sys.exit(1)
+    o = live_oauth()
+    accts = load_accounts()
+    accts = [a for a in accts if a.get("name") != name]
+    accts.append({
+        "name": name,
+        "source": "stored",
+        "access_token": o["accessToken"],
+        "refresh_token": o.get("refreshToken"),
+        "expires_at": o.get("expiresAt", 0),
+        "subscriptionType": o.get("subscriptionType"),
+        "rateLimitTier": o.get("rateLimitTier"),
+    })
+    save_accounts(accts)
+    print(f"Cuenta '{name}' guardada desde la sesión actual de Claude Code.")
+    print("Ahora puedes volver a loguearte con tu cuenta principal.")
+
+
+def cmd_list():
+    for a in load_accounts():
+        src = a.get("source", "live")
+        extra = ""
+        if src == "live":
+            extra = " (lee ~/.claude, gestionada por Claude Code)"
+        print(f"- {a.get('name')}  [{src}]{extra}")
+
+
+def cmd_remove(name):
+    accts = load_accounts()
+    new = [a for a in accts if a.get("name") != name]
+    if len(new) == len(accts):
+        print(f"No existe la cuenta '{name}'.", file=sys.stderr)
+        sys.exit(1)
+    save_accounts(new)
+    print(f"Cuenta '{name}' eliminada.")
+
+
+def main():
+    args = sys.argv[1:]
+    cmd = args[0] if args else "waybar"
+    if cmd == "waybar":
+        cmd_waybar()
+    elif cmd == "show":
+        cmd_show()
+    elif cmd == "notify":
+        cmd_notify()
+    elif cmd == "add":
+        cmd_add(args[1] if len(args) > 1 else "")
+    elif cmd == "list":
+        cmd_list()
+    elif cmd == "remove":
+        cmd_remove(args[1] if len(args) > 1 else "")
+    else:
+        print(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

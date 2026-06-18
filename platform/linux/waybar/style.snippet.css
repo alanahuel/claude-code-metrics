@@ -1,0 +1,17 @@
+/* ── Claude Code metrics — optional waybar styling ────────────────────────
+ * Append to your ~/.config/waybar/style.css. The scripts already color the
+ * percentages/bars inline via pango markup, so this is just the chip padding
+ * plus severity classes (set by claude-usage: ok / mid / high / crit / stale).
+ */
+
+#custom-claude,
+#custom-claude-metrics {
+  padding: 0 10px;
+  margin: 0 2px;
+}
+
+#custom-claude.mid    { color: #d79921; }
+#custom-claude.high   { color: #d65d0e; }
+#custom-claude.crit   { color: #cc241d; }
+#custom-claude.stale  { opacity: 0.55; }
+#custom-claude.error  { color: #cc241d; opacity: 0.7; }
