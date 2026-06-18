@@ -70,6 +70,9 @@ claude-metrics projects [N]   # spend per project/folder, last N days
 claude-metrics months         # month-over-month comparison
 claude-metrics total          # all-time tokens & cost
 claude-metrics dashboard      # generate + open the HTML dashboard
+claude-metrics report [f.pdf] # export the dashboard to PDF (headless browser)
+claude-metrics csv [f.csv]    # export hourly detail for a spreadsheet
+claude-metrics config         # show/create the config file
 claude-metrics ingest         # rebuild history now
 claude-metrics snapshot       # capture current usage % now
 
@@ -83,7 +86,23 @@ Both tools also accept a `waybar` subcommand that prints JSON for a status bar.
 
 ### Pricing
 
-`claude-metrics` estimates cost from a price table in the script (USD per million tokens, with the standard cache multipliers). Edit `BASE_PRICES` at the top of `bin/claude-metrics` and re-run `claude-metrics ingest` to recompute your whole history. This is a *what-if API cost* estimate — your subscription may bill differently.
+`claude-metrics` estimates cost from a price table (USD per million tokens, with the standard cache multipliers). This is a *what-if API cost* estimate — your subscription may bill differently. Override prices either in `BASE_PRICES` (top of `bin/claude-metrics`) or in the config file below, then re-run `claude-metrics ingest`.
+
+### Configuration
+
+Optional `~/.config/claude-metrics/config.json` (run `claude-metrics config` to create a template):
+
+```jsonc
+{
+  "currency": { "symbol": "€", "rate": 0.92 },        // displayed as USD × rate
+  "prices":   { "claude-new-model-1": [5.0, 25.0] },   // USD per million [in, out]
+  "workspace_roots": ["work", "code"]                  // folders skipped when naming projects
+}
+```
+
+### Make it yours
+
+Open this repo in **Claude Code** — it reads [`CLAUDE.md`](CLAUDE.md) and can adapt the tool to your machine (currency, language, a different status bar, extra charts, budget alerts). See [docs/CUSTOMIZE.md](docs/CUSTOMIZE.md) for copy-paste prompts.
 
 ---
 

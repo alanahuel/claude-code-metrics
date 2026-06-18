@@ -10,6 +10,7 @@ interface Payload {
   hourly: Row[];
   util: [string, string, number, string][]; // ts, window, utilization, resets_at
   pricing: Record<string, [number, number]>;
+  currency?: { symbol: string; rate: number }; // de ~/.config/claude-metrics/config.json
   model_yield?: [string, string, string, number, number, number][]; // day, window, model, beta, r2, n_obs
 }
 
@@ -45,9 +46,11 @@ let MODEL_COLORS: Record<string, string> = {};
 const charts: Record<string, echarts.ECharts> = {};
 
 // ─── Helpers de formato ─────────────────────────────────────────────────────
+let CUR = { symbol: '$', rate: 1 }; // se sobrescribe con DATA.currency en boot()
 const money = (n: number, dp?: number) => {
+  n = n * CUR.rate;
   if (dp === undefined) dp = n >= 100 ? 2 : n >= 1 ? 3 : 4;
-  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+  return CUR.symbol + n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
 };
 const tok = (n: number) => {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + 'G';
@@ -903,6 +906,7 @@ async function boot() {
     const res = await fetch('/api/metrics.json', { cache: 'no-store' });
     DATA = await res.json();
     if ((DATA as any).error) throw new Error((DATA as any).detail || (DATA as any).error);
+    if (DATA.currency) CUR = { symbol: DATA.currency.symbol || '$', rate: DATA.currency.rate || 1 };
   } catch (e) {
     document.querySelector('.shell')!.innerHTML =
       `<div class="err">No se pudieron cargar las métricas.<br/>${String(e)}<br/><br/>
@@ -930,7 +934,11 @@ async function boot() {
     try {
       const r = await fetch('/api/metrics.json', { cache: 'no-store' });
       const fresh = await r.json();
-      if (!fresh.error) { DATA = fresh; render(); }
+      if (!fresh.error) {
+        DATA = fresh;
+        if (DATA.currency) CUR = { symbol: DATA.currency.symbol || '$', rate: DATA.currency.rate || 1 };
+        render();
+      }
     } catch { /* ignora */ }
   }, 120000);
 }

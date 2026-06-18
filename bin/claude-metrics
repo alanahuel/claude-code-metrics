@@ -36,8 +36,15 @@ Subcomandos:
   total             Gasto y tokens acumulados de todo el histórico.
   dashboard         Genera el dashboard HTML con gráficas y lo abre en el navegador.
                     (`--no-open` solo lo regenera sin abrirlo).
+  report [salida.pdf] Imprime el dashboard a PDF con un navegador headless.
+  csv    [salida.csv] Exporta el detalle horario a CSV (hoja de cálculo).
+  config            Muestra/crea ~/.config/claude-metrics/config.json
+                    (moneda, precios, workspace_roots).
   waybar            JSON para waybar: icono lanzador + tooltip con el resumen.
   db                Imprime la ruta de la base de datos.
+
+Configuración opcional en ~/.config/claude-metrics/config.json:
+  currency / prices / workspace_roots  (ver `config`).
 """
 
 import glob
@@ -54,6 +61,45 @@ DB_PATH = os.path.join(DATA_DIR, "metrics.db")
 LIVE_CREDS = os.path.join(HOME, ".claude", ".credentials.json")
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 
+# --- Configuración de usuario (opcional) ------------------------------------
+# ~/.config/claude-metrics/config.json. Todo es opcional; los valores por
+# defecto reproducen el comportamiento histórico. Claves admitidas:
+#   "currency": {"symbol": "€", "rate": 0.92}   -> formatea el coste (USD×rate)
+#   "prices":   {"claude-foo-1": [in, out]}      -> añade/ajusta precios (USD/Mtok)
+#   "workspace_roots": ["code", "work"]          -> carpetas que se saltan al
+#                                                   derivar el nombre de proyecto
+CONFIG_DIR = os.path.join(HOME, ".config", "claude-metrics")
+CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+
+
+def load_config():
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+CONFIG = load_config()
+_cur = CONFIG.get("currency") or {}
+CUR_SYM = _cur.get("symbol", "$")
+try:
+    CUR_RATE = float(_cur.get("rate", 1.0)) or 1.0
+except (TypeError, ValueError):
+    CUR_RATE = 1.0
+
+
+def money(x, dp=2, comma=True):
+    """Importe formateado con el símbolo y el cambio del config."""
+    spec = f",.{dp}f" if comma else f".{dp}f"
+    return f"{CUR_SYM}{format(x * CUR_RATE, spec)}"
+
+
+def money_w(x, width, dp=2):
+    """Como money() pero con ancho fijo para alinear columnas en el terminal."""
+    return f"{CUR_SYM}{format(x * CUR_RATE, f'>{width}.{dp}f')}"
+
 # --- Precios API por millón de tokens (USD) -------------------------------
 # in / out base; los derivados de caché siguen la tarifa estándar de Anthropic:
 #   cache write 5m = 1.25× input · cache write 1h = 2× input · cache read = 0.1× input
@@ -69,6 +115,13 @@ BASE_PRICES = {
     "claude-sonnet-4-5": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
 }
+
+# Precios extra/ajustados desde el config (USD por millón: [input, output]).
+for _m, _p in (CONFIG.get("prices") or {}).items():
+    try:
+        BASE_PRICES[str(_m).lower()] = (float(_p[0]), float(_p[1]))
+    except (TypeError, ValueError, IndexError, KeyError):
+        pass
 
 
 def price_for(model):
@@ -97,16 +150,27 @@ def price_for(model):
 # proyecto (p. ej. ~/Documentos/programación/<proyecto>/... -> <proyecto>).
 WORKSPACE_ROOTS = {"documentos", "programación", "programacion", "code",
                    "dev", "projects", "proyectos", "src", "repos", "git"}
+WORKSPACE_ROOTS |= {str(r).lower() for r in (CONFIG.get("workspace_roots") or [])}
 
 
 def project_label(cwd):
     """Etiqueta de proyecto a partir del cwd del transcript. Agrupa subcarpetas
-    bajo el directorio del proyecto; saltándose raíces de workspace conocidas."""
+    bajo el directorio del proyecto; saltándose raíces de workspace conocidas.
+
+    Normaliza separadores '\\' (Windows) a '/' y la unidad 'C:' para que el
+    agrupado funcione igual en los tres sistemas operativos."""
     if not cwd:
         return "(sin proyecto)"
-    if cwd == HOME:
+    norm = cwd.replace("\\", "/")
+    home = HOME.replace("\\", "/")
+    if norm.rstrip("/") == home.rstrip("/"):
         return "~ (home)"
-    rel = cwd[len(HOME) + 1:] if cwd.startswith(HOME + "/") else cwd.lstrip("/")
+    if norm.startswith(home + "/"):
+        rel = norm[len(home) + 1:]
+    else:
+        rel = norm.lstrip("/")
+        if len(rel) >= 2 and rel[1] == ":":  # quita la unidad de Windows (C:/…)
+            rel = rel[2:].lstrip("/")
     parts = [p for p in rel.split("/") if p]
     while len(parts) > 1 and parts[0].lower() in WORKSPACE_ROOTS:
         parts.pop(0)
@@ -305,7 +369,7 @@ def ingest(con, verbose=True):
         total = sum(r[9] for r in rows)
         print(f"Ingeridos {n_msgs} mensajes en {len(rows)} celdas (hora×modelo) "
               f"de {len(files)} ficheros.")
-        print(f"Gasto total estimado del histórico: ${total:,.2f}")
+        print(f"Gasto total estimado del histórico: {money(total)}")
         if unknown_models:
             print("Modelos sin precio (coste=0): "
                   + ", ".join(sorted(unknown_models)), file=sys.stderr)
@@ -338,6 +402,7 @@ def export_json(con):
         "tz": str(now.tzinfo),
         "tz_offset_minutes": int(now.utcoffset().total_seconds() // 60),
         "last_ingest": last_ingest_row[0] if last_ingest_row else None,
+        "currency": {"symbol": CUR_SYM, "rate": CUR_RATE},
         "hourly_cols": HOURLY_COLS,
         "hourly": [list(r) for r in hourly],
         "util": [list(r) for r in util],
@@ -543,14 +608,14 @@ def report_day(con, date_str):
     print(f"  {'─'*54}")
     for h in sorted(by_hour):
         d = by_hour[h]
-        print(f"  {h}:00  {bar(d['cost']/peak)}  ${d['cost']:>7.3f}   "
+        print(f"  {h}:00  {bar(d['cost']/peak)}  {money_w(d['cost'], 7, 3)}   "
               f"{fmt_tok(d['tok']):>6} tok · {d['n']} msg")
     print(f"  {'─'*54}")
-    models_s = " · ".join(f"{m.replace('claude-','')}: ${c:.2f}"
+    models_s = " · ".join(f"{m.replace('claude-','')}: {money(c, comma=False)}"
                           for m, c in sorted(by_model.items(),
                                              key=lambda x: -x[1]))
     print(f"  Modelos:  {models_s}")
-    print(f"  TOTAL:    ${total_cost:.2f}   ({fmt_tok(total_tok)} tokens)")
+    print(f"  TOTAL:    {money(total_cost)}   ({fmt_tok(total_tok)} tokens)")
 
 
 def report_range(con, start, end):
@@ -568,14 +633,14 @@ def report_range(con, start, end):
     print(f"  Gasto diario — {start} → {end}")
     print(f"  {'─'*56}")
     for (day, cost, tok, msg) in rows:
-        print(f"  {day}  {bar(cost/peak)}  ${cost:>7.2f}   "
+        print(f"  {day}  {bar(cost/peak)}  {money_w(cost, 7)}   "
               f"{fmt_tok(tok):>6} tok · {int(msg)} msg")
         tc += cost
         tt += tok
         tm += msg
     print(f"  {'─'*56}")
-    print(f"  TOTAL:  ${tc:.2f}   {fmt_tok(tt)} tokens · {int(tm)} mensajes")
-    print(f"  Media/día: ${tc/len(rows):.2f}")
+    print(f"  TOTAL:  {money(tc)}   {fmt_tok(tt)} tokens · {int(tm)} mensajes")
+    print(f"  Media/día: {money(tc/len(rows))}")
 
 
 def report_models(con, days):
@@ -594,11 +659,11 @@ def report_models(con, days):
     print(f"  {'─'*60}")
     for (model, cost, inp, out, cw, cr, msg) in rows:
         m = model.replace("claude-", "")
-        print(f"  {m:<16} ${cost:>7.2f}  ({cost/total*100:>4.1f}%)   "
+        print(f"  {m:<16} {money_w(cost, 7)}  ({cost/total*100:>4.1f}%)   "
               f"in {fmt_tok(inp)} · out {fmt_tok(out)} · "
               f"cw {fmt_tok(cw)} · cr {fmt_tok(cr)}")
     print(f"  {'─'*60}")
-    print(f"  TOTAL:  ${total:.2f}")
+    print(f"  TOTAL:  {money(total)}")
 
 
 def report_projects(con, days):
@@ -615,10 +680,10 @@ def report_projects(con, days):
     print(f"  Gasto por proyecto — últimos {days} días")
     print(f"  {'─'*58}")
     for (proj, cost, tok, msg) in rows:
-        print(f"  {proj[:22]:<22} {bar(cost/total, 12)} ${cost:>7.2f}  "
+        print(f"  {proj[:22]:<22} {bar(cost/total, 12)} {money_w(cost, 7)}  "
               f"({cost/total*100:>4.1f}%)  {fmt_tok(tok):>6} tok")
     print(f"  {'─'*58}")
-    print(f"  TOTAL:  ${total:.2f}  ·  {len(rows)} proyectos")
+    print(f"  TOTAL:  {money(total)}  ·  {len(rows)} proyectos")
 
 
 def report_months(con):
@@ -638,11 +703,11 @@ def report_months(con):
         if prev is not None and prev > 0:
             d = (cost - prev) / prev * 100
             delta = f"  {'▲' if d>=0 else '▼'}{abs(d):>4.0f}%"
-        print(f"  {m}  {bar(cost/peak, 16)} ${cost:>8.2f}  "
+        print(f"  {m}  {bar(cost/peak, 16)} {money_w(cost, 8)}  "
               f"{fmt_tok(tok):>6} tok{delta}")
         prev = cost
     print(f"  {'─'*56}")
-    print(f"  TOTAL:  ${sum(r[1] for r in rows):.2f}  ·  {len(rows)} meses")
+    print(f"  TOTAL:  {money(sum(r[1] for r in rows))}  ·  {len(rows)} meses")
 
 
 def report_total(con):
@@ -656,7 +721,7 @@ def report_total(con):
     cost, inp, out, cw, cr, msg, hmin, hmax = r
     print(f"  Histórico completo  ({hmin} → {hmax}, hora local)")
     print(f"  {'─'*48}")
-    print(f"  Gasto real estimado : ${cost:,.2f}")
+    print(f"  Gasto real estimado : {money(cost)}")
     print(f"  Mensajes            : {int(msg):,}")
     print(f"  Input               : {fmt_tok(inp)}")
     print(f"  Output              : {fmt_tok(out)}")
@@ -716,13 +781,12 @@ def _vbars(data, unit="$", color=GB["yellow"], height=180):
     bw = max(2, (w - pad_l) / n - gap)
     mx = max((v for _, v in data), default=0) or 1.0
     plot_h = h - pad_b - 10
-    out = [f"<svg viewBox='0 0 {w} {h}' class='chart' "
-           f"preserveAspectRatio='none'>"]
+    out = [f"<svg viewBox='0 0 {w} {h}' class='chart'>"]
     for i, (lbl, v) in enumerate(data):
         bh = (v / mx) * plot_h
         x = pad_l + i * (bw + gap)
         y = 10 + plot_h - bh
-        title = f"{lbl}: {unit}{v:,.2f}" if unit == "$" else f"{lbl}: {v}"
+        title = f"{lbl}: {money(v)}" if unit == "$" else f"{lbl}: {v}"
         out.append(
             f"<rect x='{x:.1f}' y='{y:.1f}' width='{bw:.1f}' height='{bh:.1f}' "
             f"rx='1.5' fill='{color}'><title>{_esc(title)}</title></rect>")
@@ -744,7 +808,7 @@ def _hbars(data, unit="$"):
     rows = []
     for (lbl, v, col) in data:
         pct = v / mx * 100
-        val = f"${v:,.2f}" if unit == "$" else f"{v}"
+        val = money(v) if unit == "$" else f"{v}"
         rows.append(
             f"<div class='hbar-row'><span class='hbar-lbl'>{_esc(lbl)}</span>"
             f"<span class='hbar-track'><span class='hbar-fill' "
@@ -764,8 +828,7 @@ def _line(series, height=170, ymax=100, unit="%"):
     pad_b = 24
     plot_h = h - pad_b - 8
     n = max((len(s[2]) for s in series), default=1)
-    out = [f"<svg viewBox='0 0 {w} {h}' class='chart' "
-           f"preserveAspectRatio='none'>"]
+    out = [f"<svg viewBox='0 0 {w} {h}' class='chart'>"]
     # Líneas de referencia horizontales (25/50/75/100%).
     for gy in (0, 25, 50, 75, 100):
         y = 8 + plot_h - (gy / ymax) * plot_h
@@ -848,7 +911,7 @@ def build_dashboard_html(con):
 
     # --- Render -------------------------------------------------------------
     def fmt_money(x):
-        return f"${x:,.2f}"
+        return money(x)
     cards = [
         ("Hoy", fmt_money(cost_today), GB["green"]),
         ("Este mes", fmt_money(cost_month), GB["yellow"]),
@@ -862,7 +925,7 @@ def build_dashboard_html(con):
 
     model_legend = "".join(
         f"<span class='leg'><i style='background:{c}'></i>{_esc(m)} "
-        f"${v:,.2f}</span>" for (m, v, c) in model_data)
+        f"{money(v)}</span>" for (m, v, c) in model_data)
 
     html = f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8">
@@ -994,9 +1057,134 @@ def waybar(con):
     month_cost = (rm[0] or 0.0) if rm else 0.0
     text = "\U000f0a99"  # 󰪙 chart-box: lanzador del dashboard
     tooltip = (f"<b>Métricas de Claude</b>  <i>(clic = dashboard)</i>\n"
-               f"Hoy:   ${cost:.2f}   ({fmt_tok(tok)} tok)\n"
-               f"Mes:   ${month_cost:.2f}")
+               f"Hoy:   {money(cost)}   ({fmt_tok(tok)} tok)\n"
+               f"Mes:   {money(month_cost)}")
     print(json.dumps({"text": text, "tooltip": tooltip, "class": "claude-metrics"}))
+
+
+# --- Bootstrap, CSV, PDF, config --------------------------------------------
+def _ensure_bootstrapped(con):
+    """Primer arranque: si nunca se ha ingerido nada, hazlo ahora para que
+    cualquier comando funcione sin pedir un `ingest` manual."""
+    try:
+        row = con.execute(
+            "SELECT value FROM meta WHERE key='last_ingest'").fetchone()
+        if row is None:
+            ingest(con, verbose=False)
+    except sqlite3.Error:
+        pass
+
+
+def export_csv(con, out_path=None):
+    """Vuelca el detalle horario (hora×proyecto×modelo) a CSV para hoja de
+    cálculo. El coste va en USD crudo (cost_usd), igual que en la base."""
+    import csv
+    if out_path is None:
+        out_path = os.path.join(DATA_DIR, "metrics.csv")
+    out_path = os.path.abspath(os.path.expanduser(out_path))
+    rows = con.execute(
+        "SELECT hour, project, model, input, output, cache_write_5m, "
+        "cache_write_1h, cache_read, messages, cost_usd FROM usage_hourly "
+        "ORDER BY hour, project, model").fetchall()
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(HOURLY_COLS)
+        w.writerows(rows)
+    print(out_path)
+    return 0
+
+
+def _find_chromium():
+    """Localiza un navegador de la familia Chromium para imprimir a PDF."""
+    import shutil
+    for c in ("chromium", "chromium-browser", "google-chrome",
+              "google-chrome-stable", "brave", "brave-browser",
+              "microsoft-edge", "msedge", "chrome"):
+        p = shutil.which(c)
+        if p:
+            return p
+    extra = []
+    if sys.platform == "darwin":
+        extra = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+    elif sys.platform.startswith("win"):
+        for base in filter(None, (os.environ.get("PROGRAMFILES"),
+                                  os.environ.get("PROGRAMFILES(X86)"),
+                                  os.environ.get("LOCALAPPDATA"))):
+            extra += [
+                os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"),
+                os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe"),
+                os.path.join(base, "BraveSoftware", "Brave-Browser",
+                             "Application", "brave.exe"),
+            ]
+    for p in extra:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def report_pdf(con, out_path=None):
+    """Genera el dashboard HTML y lo imprime a PDF con un navegador headless.
+    Si no hay navegador Chromium, abre el HTML para 'Imprimir → Guardar PDF'."""
+    from pathlib import Path
+    _ensure_bootstrapped(con)
+    _ingest_if_stale(con)
+    html = build_dashboard_html(con)
+    html_path = os.path.join(DATA_DIR, "dashboard.html")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    if out_path is None:
+        stamp = datetime.now().astimezone().strftime("%Y%m%d")
+        out_path = os.path.join(DATA_DIR, f"claude-metrics-{stamp}.pdf")
+    out_path = os.path.abspath(os.path.expanduser(out_path))
+    browser = _find_chromium()
+    if not browser:
+        print("No encontré un navegador Chromium (chrome/chromium/brave/edge).",
+              file=sys.stderr)
+        print(f"Abre el HTML y usa Imprimir → Guardar como PDF:\n  {html_path}",
+              file=sys.stderr)
+        _open_path(html_path)
+        return 1
+    import subprocess
+    url = Path(html_path).as_uri()  # file:// correcto en los tres SO
+    try:
+        subprocess.run(
+            [browser, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
+             f"--print-to-pdf={out_path}", url],
+            timeout=90, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"Falló la impresión a PDF: {e}", file=sys.stderr)
+        return 1
+    if not os.path.exists(out_path):
+        print("El navegador no generó el PDF (¿versión sin --headless=new?).",
+              file=sys.stderr)
+        return 1
+    print(out_path)
+    return 0
+
+
+def cmd_config():
+    """Muestra (y crea, si falta) el archivo de configuración del usuario."""
+    if not os.path.exists(CONFIG_PATH):
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        template = {"currency": {"symbol": "$", "rate": 1.0},
+                    "prices": {}, "workspace_roots": []}
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(template, f, indent=2)
+        print(f"Config creado: {CONFIG_PATH}")
+    else:
+        print(f"Config: {CONFIG_PATH}")
+    print(f"  moneda               : {CUR_SYM}  (cambio ×{CUR_RATE})")
+    print(f"  precios personalizados: {len(CONFIG.get('prices') or {})}")
+    print(f"  workspace_roots extra : {CONFIG.get('workspace_roots') or []}")
+    print("Tras cambiar precios, corre `claude-metrics ingest` para recalcular.")
+    return 0
 
 
 # --- main --------------------------------------------------------------------
@@ -1004,6 +1192,12 @@ def main():
     args = sys.argv[1:]
     cmd = args[0] if args else "today"
     con = connect()
+
+    # Primer arranque sin instalar: si la BD está vacía, ingiere sola para que
+    # cualquier informe funcione. (waybar/dashboard ya se auto-ingieren.)
+    if cmd in ("today", "day", "week", "range", "util", "models", "projects",
+               "months", "total", "csv", "report", "export"):
+        _ensure_bootstrapped(con)
 
     if cmd == "ingest":
         ingest(con)
@@ -1044,6 +1238,14 @@ def main():
         dashboard(con, open_browser="--no-open" not in args)
     elif cmd == "export":
         print(export_json(con))
+    elif cmd == "csv":
+        sys.exit(export_csv(con, args[1] if len(args) > 1 else None))
+    elif cmd == "report":
+        # report [salida.pdf]  ·  --pdf admitido por simetría
+        path = next((a for a in args[1:] if not a.startswith("-")), None)
+        sys.exit(report_pdf(con, path))
+    elif cmd == "config":
+        sys.exit(cmd_config())
     elif cmd == "db":
         print(DB_PATH)
     else:
