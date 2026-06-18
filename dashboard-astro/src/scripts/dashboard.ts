@@ -17,17 +17,18 @@ interface Payload {
 // Colores dependientes del tema (se intercambian en modo día/noche).
 const THEMES = {
   dark: {
-    fg: '#e8e9f0', dim: '#aeb2c0', muted: '#6f7484', line: '#20232e',
-    lineSoft: '#191c25', panel: '#111319', tipBg: 'rgba(17,19,25,0.96)',
+    fg: '#e7f0f4', dim: '#a9bcc4', muted: '#6f8893', line: '#1f3a47',
+    lineSoft: '#162c36', panel: '#102029', tipBg: 'rgba(16,32,41,0.96)',
   },
   light: {
-    fg: '#1a1d27', dim: '#52596b', muted: '#8a90a0', line: '#e4e7ee',
-    lineSoft: '#eef0f5', panel: '#ffffff', tipBg: 'rgba(255,255,255,0.98)',
+    fg: '#16323d', dim: '#3f5862', muted: '#6b7c84', line: '#dbe4e9',
+    lineSoft: '#eaf0f3', panel: '#ffffff', tipBg: 'rgba(255,255,255,0.98)',
   },
 };
-let THEME: 'dark' | 'light' = 'dark';
-let C = THEMES.dark;
-const PALETTE = ['#7c83ff', '#2dd4bf', '#f6b549', '#fb6f92', '#4cc4f5', '#b18bff', '#9fe05a', '#8a93a6'];
+let THEME: 'dark' | 'light' = 'light';
+let C = THEMES.light;
+// Paleta "Coast" (estilo Charly's): teal, naranja, teal-navy, oro, cielo, rojo, verde, slate.
+const PALETTE = ['#1499c4', '#ee6f39', '#1c6e88', '#e0a32c', '#5bbcd6', '#c8503a', '#2f9e7f', '#8a93a6'];
 const FONT = "'Hanken Grotesk Variable', sans-serif";
 const MONO = "'JetBrains Mono Variable', monospace";
 
@@ -253,10 +254,10 @@ function renderKPIs(a: Agg) {
     `${dArrow} ${Math.abs(deltaPct).toFixed(1)}% vs. anterior`;
   const topColor = MODEL_COLORS[a.kpi.top] || C.muted;
   const cards = [
-    { l: 'Gasto del rango', v: money(a.kpi.cost, 2), sw: '#7c83ff', delta: { cls: dCls, txt: dTxt, arrow: '' }, sub: '' },
-    { l: 'Media diaria', v: money(a.kpi.cost / a.kpi.days, 2), sw: '#f6b549', sub: `${a.kpi.days} días en rango` },
-    { l: 'Mensajes', v: a.kpi.msgs.toLocaleString('es'), sw: '#4cc4f5', sub: `${(a.kpi.msgs / a.kpi.days).toFixed(0)}/día` },
-    { l: 'Tokens', v: tok(a.kpi.tokens), sw: '#2dd4bf', sub: 'in+out+caché' },
+    { l: 'Gasto del rango', v: money(a.kpi.cost, 2), sw: '#1499c4', delta: { cls: dCls, txt: dTxt, arrow: '' }, sub: '' },
+    { l: 'Media diaria', v: money(a.kpi.cost / a.kpi.days, 2), sw: '#e0a32c', sub: `${a.kpi.days} días en rango` },
+    { l: 'Mensajes', v: a.kpi.msgs.toLocaleString('es'), sw: '#1c6e88', sub: `${(a.kpi.msgs / a.kpi.days).toFixed(0)}/día` },
+    { l: 'Tokens', v: tok(a.kpi.tokens), sw: '#2f9e7f', sub: 'in+out+caché' },
     { l: 'Modelo top', v: shortModel(a.kpi.top), sw: topColor, mono: false, sub: money(a.perModel[a.kpi.top] ? a.perModel[a.kpi.top].reduce((x, y) => x + y, 0) : 0, 2) },
   ];
   document.getElementById('kpis')!.innerHTML = cards.map((c) => `
@@ -304,8 +305,8 @@ function renderSpend(a: Agg) {
     yAxis: { type: 'value', ...axisCommon(), axisLabel: { ...axisCommon().axisLabel, formatter: (v: number) => '$' + v } },
     dataZoom: [
       { type: 'inside', throttle: 50 },
-      { type: 'slider', height: 16, bottom: 8, borderColor: C.line, fillerColor: '#7c83ff22',
-        handleStyle: { color: '#7c83ff' }, moveHandleStyle: { color: C.line },
+      { type: 'slider', height: 16, bottom: 8, borderColor: C.line, fillerColor: '#1499c422',
+        handleStyle: { color: '#1499c4' }, moveHandleStyle: { color: C.line },
         dataBackground: { lineStyle: { color: C.line }, areaStyle: { color: C.lineSoft } },
         textStyle: { color: C.muted, fontFamily: MONO, fontSize: 9 } },
     ],
@@ -373,7 +374,7 @@ function renderMonthly(projFilter: string | null) {
     const last = rows[rows.length - 1].cost, prev = rows[rows.length - 2].cost;
     const d = prev > 0 ? ((last - prev) / prev) * 100 : 0;
     const el = document.getElementById('momHint');
-    if (el) el.innerHTML = `<span style="color:${d >= 0 ? '#fb7185' : '#34d399'}">` +
+    if (el) el.innerHTML = `<span style="color:${d >= 0 ? '#d8593a' : '#2f9e7f'}">` +
       `${d >= 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(0)}% MoM</span>`;
   }
   c.setOption({
@@ -385,7 +386,7 @@ function renderMonthly(projFilter: string | null) {
         let delta = '';
         if (i > 0 && rows[i - 1].cost > 0) {
           const d = ((r.cost - rows[i - 1].cost) / rows[i - 1].cost) * 100;
-          delta = `<div style="margin-top:4px;color:${d >= 0 ? '#fb7185' : '#34d399'}">${d >= 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(1)}% vs. mes previo</div>`;
+          delta = `<div style="margin-top:4px;color:${d >= 0 ? '#d8593a' : '#2f9e7f'}">${d >= 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(1)}% vs. mes previo</div>`;
         }
         return `<div style="color:${C.muted};margin-bottom:4px">${ps[0].axisValue}</div>` +
           `<b>${money(r.cost, 2)}</b><div style="color:${C.dim};font-size:11px;margin-top:2px">${tok(r.tokens)} tok · ${r.msgs} msg</div>${delta}`;
@@ -400,8 +401,8 @@ function renderMonthly(projFilter: string | null) {
           borderRadius: [4, 4, 0, 0],
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1,
             r.month === nowMonth
-              ? [{ offset: 0, color: '#2dd4bf' }, { offset: 1, color: '#2dd4bf33' }]
-              : [{ offset: 0, color: '#7c83ff' }, { offset: 1, color: '#7c83ff33' }]),
+              ? [{ offset: 0, color: '#ee6f39' }, { offset: 1, color: '#ee6f3933' }]
+              : [{ offset: 0, color: '#1499c4' }, { offset: 1, color: '#1499c433' }]),
         },
       })),
       markLine: rows.length > 2 ? {
@@ -481,7 +482,7 @@ function renderTokens(a: Agg) {
     areaStyle: { opacity: 0.12, color }, emphasis: { focus: 'series' }, data,
   });
   c.setOption({
-    color: ['#7c83ff', '#2dd4bf', '#f6b549'],
+    color: ['#1499c4', '#2f9e7f', '#e0a32c'],
     legend: { top: 6, right: 8, textStyle: { color: C.dim, fontFamily: MONO, fontSize: 10.5 },
       itemWidth: 12, itemHeight: 8, icon: 'roundRect' },
     grid: baseGrid({ top: 30 }),
@@ -491,7 +492,7 @@ function renderTokens(a: Agg) {
         ps.map((p) => `<div style="display:flex;justify-content:space-between;gap:18px"><span>${p.marker}${p.seriesName}</span><span>${tok(p.value)}</span></div>`).join('') },
     xAxis: { type: 'category', data: a.labels, boundaryGap: false, ...axisCommon(true) },
     yAxis: { type: 'value', ...axisCommon(), axisLabel: { ...axisCommon().axisLabel, formatter: (v: number) => tok(v) } },
-    series: [mk('Entrada', a.tokensIn, '#7c83ff'), mk('Salida', a.tokensOut, '#2dd4bf'), mk('Caché', a.tokensCache, '#f6b549')],
+    series: [mk('Entrada', a.tokensIn, '#1499c4'), mk('Salida', a.tokensOut, '#2f9e7f'), mk('Caché', a.tokensCache, '#e0a32c')],
   }, true);
 }
 
@@ -509,9 +510,9 @@ function renderHour(a: Agg) {
       itemStyle: {
         borderRadius: [3, 3, 0, 0],
         color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: '#7c83ff' }, { offset: 1, color: '#7c83ff44' }]),
+          { offset: 0, color: '#1499c4' }, { offset: 1, color: '#1499c444' }]),
       },
-      emphasis: { itemStyle: { color: '#9aa0ff' } },
+      emphasis: { itemStyle: { color: '#3fb0d6' } },
     }],
   }, true);
 }
@@ -540,7 +541,7 @@ function renderUtil(a: Agg) {
     areaStyle: { opacity: 0.1, color }, data,
   });
   c.setOption({
-    color: ['#f6b549', '#4cc4f5'],
+    color: ['#ee6f39', '#1499c4'],
     legend: { top: 6, right: 8, textStyle: { color: C.dim, fontFamily: MONO, fontSize: 10.5 },
       itemWidth: 12, itemHeight: 8, icon: 'roundRect' },
     grid: baseGrid({ top: 30 }),
@@ -554,7 +555,7 @@ function renderUtil(a: Agg) {
     xAxis: { type: 'time', ...axisCommon(true) },
     yAxis: { type: 'value', max: 100, min: 0, ...axisCommon(),
       axisLabel: { ...axisCommon().axisLabel, formatter: (v: number) => v + '%' } },
-    series: [mk('Ventana 5h', s5, '#f6b549'), mk('Semanal 7d', s7, '#4cc4f5')],
+    series: [mk('Ventana 5h', s5, '#ee6f39'), mk('Semanal 7d', s7, '#1499c4')],
   }, true);
 }
 
@@ -619,7 +620,7 @@ function renderYield() {
     const avg = (arr: YieldPt[]) => arr.reduce((s, p) => s + p.pct100k, 0) / arr.length;
     const a0 = avg(s5.slice(0, mid)), a1 = avg(s5.slice(mid));
     const d = a0 > 0 ? ((a1 - a0) / a0) * 100 : 0;
-    const col = d > 1 ? '#fb7185' : d < -1 ? '#34d399' : C.muted;
+    const col = d > 1 ? '#d8593a' : d < -1 ? '#2f9e7f' : C.muted;
     statEl.innerHTML = `5h · 100k tok ≈ <b>${a1.toFixed(2)}%</b> ` +
       `<span style="color:${C.muted}">(antes ${a0.toFixed(2)}%)</span> ` +
       `<span style="color:${col}">${d >= 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(0)}%</span>`;
@@ -637,7 +638,7 @@ function renderYield() {
     data: data.map((p) => [p.ts, +p.pct100k.toFixed(3)]),
   });
   c.setOption({
-    color: ['#b18bff', '#4cc4f5'],
+    color: ['#ee6f39', '#1c6e88'],
     legend: {
       top: 6, right: 8, data: ['Ventana 5h', 'Ventana 7d'],
       textStyle: { color: C.dim, fontFamily: MONO, fontSize: 10.5 }, itemWidth: 12, itemHeight: 8, icon: 'roundRect',
@@ -665,7 +666,7 @@ function renderYield() {
       nameTextStyle: { color: C.muted, fontFamily: MONO, fontSize: 10 },
       axisLabel: { ...axisCommon().axisLabel, formatter: (v: number) => v + '%' },
     },
-    series: [mk('Ventana 5h', s5, '#b18bff'), mk('Ventana 7d', s7, '#4cc4f5', true)],
+    series: [mk('Ventana 5h', s5, '#ee6f39'), mk('Ventana 7d', s7, '#1c6e88', true)],
   }, true);
 }
 
@@ -883,15 +884,14 @@ function applyTheme(t: 'dark' | 'light', rerender = true) {
 }
 
 function initTheme() {
-  let t: 'dark' | 'light' = 'dark';
+  let t: 'dark' | 'light' = 'light';   // claro por defecto (estilo Charly's)
   const urlT = new URLSearchParams(location.search).get('theme');
   if (urlT === 'light' || urlT === 'dark') {
     t = urlT;
   } else {
     try {
       const saved = localStorage.getItem('cm-theme');
-      if (saved === 'light' || saved === 'dark') t = saved;
-      else if (window.matchMedia?.('(prefers-color-scheme: light)').matches) t = 'light';
+      if (saved === 'light' || saved === 'dark') t = saved;  // solo si el usuario eligió
     } catch { /* ignora */ }
   }
   applyTheme(t, false);

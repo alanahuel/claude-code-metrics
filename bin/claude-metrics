@@ -757,13 +757,15 @@ def report_util(con, n):
 
 
 # --- Dashboard HTML (gráficas SVG autocontenidas, sin internet) -------------
-# Paleta gruvbox para encajar con el resto del escritorio.
-PALETTE = ["#98971a", "#d79921", "#d65d0e", "#458588", "#b16286",
-           "#689d6a", "#cc241d", "#a89984"]
-GB = {"bg": "#1d2021", "panel": "#282828", "panel2": "#32302f",
-      "fg": "#ebdbb2", "muted": "#928374", "grid": "#3c3836",
-      "green": "#98971a", "yellow": "#d79921", "orange": "#d65d0e",
-      "red": "#cc241d", "blue": "#458588", "aqua": "#689d6a"}
+# Paleta clara estilo "Charly's Way": superficies blancas, teal primario,
+# naranja de acento, titulares teal-navy. (Las claves verde/amarillo/etc. se
+# mantienen por compatibilidad; su valor ahora es el de la nueva paleta.)
+PALETTE = ["#1499c4", "#ee6f39", "#1c6e88", "#e0a32c", "#5bbcd6",
+           "#c8503a", "#2f9e7f", "#8a93a6"]
+GB = {"bg": "#eef3f6", "panel": "#ffffff", "panel2": "#e7eef2",
+      "fg": "#16323d", "muted": "#6b7c84", "grid": "#dbe4e9",
+      "green": "#1499c4", "yellow": "#e0a32c", "orange": "#ee6f39",
+      "red": "#c8503a", "blue": "#1c6e88", "aqua": "#2f9e7f"}
 
 
 def _esc(s):
@@ -934,7 +936,7 @@ def build_dashboard_html(con):
 <meta http-equiv="refresh" content="120">
 <title>Claude · Métricas de gasto</title>
 <style>
-  :root {{ color-scheme: dark; }}
+  :root {{ color-scheme: light; }}
   * {{ box-sizing: border-box; }}
   body {{ margin:0; background:{GB['bg']}; color:{GB['fg']};
     font-family: 'JetBrains Mono','DejaVu Sans Mono',ui-monospace,monospace;
@@ -978,7 +980,7 @@ def build_dashboard_html(con):
   <div class="cards">{cards_html}</div>
 
   <div class="panel"><h2>Gasto por hora · hoy <span>({today})</span></h2>
-    {_vbars(hourly_data, color=GB['yellow'])}</div>
+    {_vbars(hourly_data, color=GB['green'])}</div>
 
   <div class="panel"><h2>Gasto diario · últimos 30 días</h2>
     {_vbars(daily_data, color=GB['orange'])}</div>
@@ -1118,7 +1120,7 @@ def build_report_html(con, start, end, project=None):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude · Informe {start} → {end}</title>
 <style>
-  :root {{ color-scheme: dark; }}
+  :root {{ color-scheme: light; }}
   * {{ box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
   body {{ margin:0; background:{GB['bg']}; color:{GB['fg']};
     font-family:'JetBrains Mono','DejaVu Sans Mono',ui-monospace,monospace;
@@ -1154,7 +1156,7 @@ def build_report_html(con, start, end, project=None):
   <h1>󰧑 Claude Code · informe de gasto</h1>
   <div class="sub">{scope}  ·  generado {now.strftime('%d %b %Y · %H:%M')}  ·  datos locales</div>
   <div class="cards">{cards_html}</div>
-  <div class="panel"><h2>{ts_title} <span></span></h2>{_vbars(ts, color=GB['yellow'])}</div>
+  <div class="panel"><h2>{ts_title} <span></span></h2>{_vbars(ts, color=GB['green'])}</div>
   <div class="panel"><h2>Gasto por modelo</h2>{_hbars(model_data)}
     <div class="legend">{model_legend}</div></div>
   {proj_panel}
